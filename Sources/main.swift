@@ -3,18 +3,45 @@ import ServiceManagement
 
 let hid = HIDPP()
 
-// 命令行探测模式：读一次电量，打印后退出。用于排查问题。
+// Probe mode reads the battery once, prints it and exits. Use it for troubleshooting:
 //   MouseBattery --probe
 if CommandLine.arguments.contains("--probe") {
     hid.verbose = true
     hid.start()
     Thread.sleep(forTimeInterval: 1.0)
     if let r = hid.readBattery() {
-        print("\(r.deviceName): \(r.percent)%\(r.charging ? "（充电中）" : r.full ? "（已充满）" : "")")
+        print("\(r.deviceName): \(r.percent)%\(r.charging ? " (charging)" : r.full ? " (fully charged)" : "")")
         exit(0)
     }
-    print(hid.hasDevice ? "找到了 Logitech 设备，但鼠标没有回应（可能关机或休眠）" : "没有找到 Logitech 设备")
+    print(hid.hasDevice ? "Found a Logitech device, but the mouse did not answer (off or asleep?)"
+                        : "No Logitech device found")
     exit(1)
+}
+
+// Icon preview mode writes sample icons as PNG files, to check the drawing without a menu bar:
+//   MouseBattery --icon-preview <directory>
+if let flag = CommandLine.arguments.firstIndex(of: "--icon-preview"), CommandLine.arguments.count > flag + 1 {
+    let directory = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+    let samples: [(name: String, percent: Int?, charging: Bool)] = [
+        ("unknown", nil, false), ("5", 5, false), ("64", 64, false),
+        ("64-charging", 64, true), ("100", 100, false), ("100-charging", 100, true),
+    ]
+    let scale = 8
+    for sample in samples {
+        let icon = BatteryIcon.image(percent: sample.percent, charging: sample.charging)
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(icon.size.width) * scale, pixelsHigh: Int(icon.size.height) * scale,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        bitmap.size = icon.size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        icon.draw(in: NSRect(origin: .zero, size: icon.size))
+        NSGraphicsContext.restoreGraphicsState()
+        try! bitmap.representation(using: .png, properties: [:])!
+            .write(to: directory.appendingPathComponent("icon-\(sample.name).png"))
+    }
+    exit(0)
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -26,10 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastSuccess: Date?
     private var reachable = false
 
-    private let nameItem = NSMenuItem(title: "正在查找鼠标…", action: nil, keyEquivalent: "")
+    private let nameItem = NSMenuItem(title: "Looking for mouse…", action: nil, keyEquivalent: "")
     private let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let updatedLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private lazy var loginItem = NSMenuItem(title: "开机自动启动", action: #selector(toggleLogin), keyEquivalent: "")
+    private lazy var loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = NSMenu()
@@ -38,10 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(statusLine)
         menu.addItem(updatedLine)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "立即刷新", action: #selector(refresh), keyEquivalent: "r"))
+        menu.addItem(NSMenuItem(title: "Refresh Now", action: #selector(refresh), keyEquivalent: "r"))
         menu.addItem(loginItem)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
         render()
 
@@ -50,7 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         hid.start()
 
-        // 给系统一点时间找到设备，然后开始定时读取。
+        // Give the system a moment to find the device before the first read.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.refresh() }
         Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { _ in self.refresh() }
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -73,29 +100,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func render() {
         guard let button = statusItem.button else { return }
-        let symbol = lastReading?.charging == true ? "bolt.fill" : "computermouse.fill"
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "鼠标电量")
-        image?.isTemplate = true
-        button.image = image
-        button.imagePosition = .imageLeading
+        button.image = BatteryIcon.image(percent: lastReading?.percent, charging: lastReading?.charging ?? false)
+        button.setAccessibilityLabel("Mouse battery")
 
         guard let reading = lastReading else {
-            button.title = " --"
-            nameItem.title = hid.hasDevice ? "鼠标没有回应" : "没有找到 Logitech 设备"
-            statusLine.title = hid.hasDevice ? "请动一下鼠标，或检查鼠标是否开机" : "请检查接收器是否插好"
+            button.toolTip = nil
+            nameItem.title = hid.hasDevice ? "Mouse not responding" : "No Logitech device found"
+            statusLine.title = hid.hasDevice ? "Move the mouse or check that it is switched on"
+                                             : "Check that the receiver is plugged in"
             updatedLine.isHidden = true
             return
         }
 
-        button.title = " \(reading.percent)%"
-        // 读不到时保留上次的数字，但调淡，表示不是最新的。
+        // Keep the last value when the mouse cannot be reached, but dim it to show it is stale.
         button.appearsDisabled = !reachable
+        button.toolTip = "\(reading.deviceName): \(reading.percent)%"
 
         nameItem.title = reading.deviceName
-        let state = reading.full ? "已充满" : reading.charging ? "充电中" : "使用电池"
-        statusLine.title = "电量 \(reading.percent)% · \(state)"
+        let state = reading.full ? "Fully Charged" : reading.charging ? "Charging" : "On Battery"
+        statusLine.title = "\(reading.percent)% · \(state)"
         updatedLine.isHidden = false
-        updatedLine.title = reachable ? "更新于 \(timeText())" : "鼠标休眠或关机，显示的是 \(timeText()) 的读数"
+        updatedLine.title = reachable ? "Updated at \(timeText())" : "Mouse asleep or off · last read at \(timeText())"
     }
 
     private func timeText() -> String {
@@ -105,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return formatter.string(from: lastSuccess)
     }
 
-    // MARK: - 开机自动启动
+    // MARK: - Launch at login
 
     func menuWillOpen(_ menu: NSMenu) {
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -120,7 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         } catch {
             let alert = NSAlert()
-            alert.messageText = "无法更改开机自动启动"
+            alert.messageText = "Could not change Launch at Login"
             alert.informativeText = error.localizedDescription
             alert.runModal()
         }

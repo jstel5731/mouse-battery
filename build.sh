@@ -1,5 +1,5 @@
 #!/bin/bash
-# 编译并打包成 build/MouseBattery.app
+# Builds and packages build/MouseBattery.app
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -27,4 +27,4 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 EOF
 
 codesign --force --sign - "$APP"
-echo "完成: $APP"
+echo "Built $APP"

@@ -1,7 +1,7 @@
 import Foundation
 import IOKit.hid
 
-/// 一次电量读数。
+/// A single battery reading.
 struct BatteryReading {
     var percent: Int
     var charging: Bool
@@ -9,8 +9,8 @@ struct BatteryReading {
     var deviceName: String
 }
 
-/// 用 Logitech 的 HID++ 2.0 协议和鼠标（或 Lightspeed 接收器）通信。
-/// 只发「查询」类请求，不改鼠标的任何设置，可以和 G Hub 同时运行。
+/// Talks to the mouse (directly or through a Lightspeed receiver) over Logitech's HID++ 2.0 protocol.
+/// Sends read-only queries, so it never changes mouse settings and can run alongside G Hub.
 final class HIDPP {
     private static let logitechVendorID = 0x046D
     private static let vendorUsagePage = 0xFF00
@@ -19,7 +19,7 @@ final class HIDPP {
     private static let shortReportID: UInt8 = 0x10
     private static let longReportLength = 20
 
-    // HID++ 2.0 功能编号
+    // HID++ 2.0 feature IDs
     private static let featureDeviceName: UInt16 = 0x0005
     private static let featureBatteryStatus: UInt16 = 0x1000
     private static let featureUnifiedBattery: UInt16 = 0x1004
@@ -42,7 +42,7 @@ final class HIDPP {
     private var cachedName: String?
 
     var verbose = false
-    /// 鼠标主动上报电量变化时调用（在 HID 线程上）。
+    /// Called on the HID thread when the mouse reports a battery change by itself.
     var onBatteryEvent: (() -> Void)?
 
     func start() {
@@ -73,7 +73,7 @@ final class HIDPP {
         return !devices.isEmpty
     }
 
-    // MARK: - 设备插拔
+    // MARK: - Device hotplug
 
     private func deviceAdded(_ device: IOHIDDevice) {
         let size = max(64, (IOHIDDeviceGetProperty(device, kIOHIDMaxInputReportSizeKey as CFString) as? Int) ?? 64)
@@ -90,7 +90,7 @@ final class HIDPP {
         devices.append(device)
         buffers.append(buffer)
         lock.unlock()
-        log("发现设备: \(IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) ?? "?" as CFString)")
+        log("Found device: \(IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) ?? "?" as CFString)")
     }
 
     private func deviceRemoved(_ device: IOHIDDevice) {
@@ -100,7 +100,7 @@ final class HIDPP {
         lock.unlock()
     }
 
-    // MARK: - 收发
+    // MARK: - Transport
 
     private func received(_ bytes: [UInt8]) {
         log("<- " + hex(bytes))
@@ -115,7 +115,7 @@ final class HIDPP {
         let current = target
         lock.unlock()
 
-        // 鼠标主动上报的电量事件：软件编号为 0。
+        // Unsolicited battery events carry software ID 0.
         if let current, bytes.count >= 4,
            bytes[0] == HIDPP.longReportID,
            bytes[1] == current.deviceIndex,
@@ -125,7 +125,7 @@ final class HIDPP {
         }
     }
 
-    /// 发一条请求并等回复。返回回复里的参数部分；出错或超时返回 nil。
+    /// Sends one request and waits for the reply. Returns the reply parameters, or nil on error or timeout.
     private func request(_ device: IOHIDDevice, index: UInt8, feature: UInt8, function: UInt8,
                          params: [UInt8] = []) -> [UInt8]? {
         let functionByte = (function << 4) | HIDPP.softwareID
@@ -137,9 +137,9 @@ final class HIDPP {
         matcher = { r in
             guard r.count >= 5, r[1] == index else { return false }
             if r[0] == HIDPP.longReportID, r[2] == feature, r[3] == functionByte { return true }
-            // HID++ 2.0 报错
+            // HID++ 2.0 error
             if r[0] == HIDPP.longReportID, r[2] == 0xFF, r[3] == feature, r[4] == functionByte { return true }
-            // HID++ 1.0 报错（比如鼠标关机或休眠，接收器代答）
+            // HID++ 1.0 error: the receiver answers for a mouse that is off or asleep
             if r[0] == HIDPP.shortReportID, r[2] == 0x8F, r[3] == feature, r[4] == functionByte { return true }
             return false
         }
@@ -152,7 +152,7 @@ final class HIDPP {
         if result == kIOReturnSuccess, responseArrived.wait(timeout: .now() + 0.7) == .success {
             lock.lock(); reply = response; lock.unlock()
         } else if result != kIOReturnSuccess {
-            log("发送失败: \(String(format: "0x%08x", result))")
+            log("Send failed: \(String(format: "0x%08x", result))")
         }
         lock.lock(); matcher = nil; response = nil; lock.unlock()
 
@@ -160,7 +160,7 @@ final class HIDPP {
         return Array(reply[4...])
     }
 
-    /// 问设备：某个功能在它那里排第几号。0 表示不支持。
+    /// Asks the device for the index it assigned to a feature. Index 0 means unsupported.
     private func featureIndex(_ device: IOHIDDevice, index: UInt8, feature: UInt16) -> UInt8? {
         guard let r = request(device, index: index, feature: 0x00, function: 0,
                               params: [UInt8(feature >> 8), UInt8(feature & 0xFF)]),
@@ -168,9 +168,9 @@ final class HIDPP {
         return r[0]
     }
 
-    // MARK: - 读电量
+    // MARK: - Battery
 
-    /// 读一次电量。必须在后台队列上调用（会阻塞等回复）。
+    /// Reads the battery once. Blocks while waiting for replies, so call it off the main thread.
     func readBattery() -> BatteryReading? {
         lock.lock()
         let known = target
@@ -179,7 +179,7 @@ final class HIDPP {
 
         if let known, let reading = read(known) { return reading }
 
-        // 接收器上配对的鼠标一般在 1 号位；有线直连时用 0xFF。
+        // A mouse paired to a receiver is usually in slot 1; a wired mouse answers on 0xFF.
         let indexes: [UInt8] = [1, 2, 3, 4, 5, 6, 0xFF]
         for device in all {
             for index in indexes {
@@ -198,7 +198,7 @@ final class HIDPP {
     }
 
     private func read(_ t: Target) -> BatteryReading? {
-        // 两种电量功能的「读状态」编号不同：新的是 1，旧的是 0。
+        // The status query is function 1 on Unified Battery and function 0 on the older Battery Status.
         guard let r = request(t.device, index: t.deviceIndex, feature: t.batteryFeatureIndex,
                               function: t.unified ? 1 : 0), r.count >= 3 else { return nil }
         let status = r[2]
@@ -216,7 +216,7 @@ final class HIDPP {
 
     private func name(_ t: Target) -> String {
         if let cachedName { return cachedName }
-        let fallback = "Logitech 鼠标"
+        let fallback = "Logitech Mouse"
         guard let f = featureIndex(t.device, index: t.deviceIndex, feature: HIDPP.featureDeviceName),
               let count = request(t.device, index: t.deviceIndex, feature: f, function: 0)?.first
         else { return fallback }
@@ -231,7 +231,7 @@ final class HIDPP {
         return text
     }
 
-    // MARK: - 调试输出
+    // MARK: - Debug output
 
     private func hex(_ bytes: [UInt8]) -> String {
         bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
