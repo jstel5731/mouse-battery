@@ -14,7 +14,9 @@ struct BatteryReading {
 final class HIDPP {
     private static let logitechVendorID = 0x046D
     private static let vendorUsagePage = 0xFF00
-    private static let softwareID: UInt8 = 0x0B
+    /// Software IDs tag our requests so replies can be told apart from other apps' traffic. ID 0 is
+    /// reserved for events the mouse sends by itself.
+    private static let softwareIDs: ClosedRange<UInt8> = 0x08...0x0F
     private static let longReportID: UInt8 = 0x11
     private static let shortReportID: UInt8 = 0x10
     private static let longReportLength = 20
@@ -40,6 +42,7 @@ final class HIDPP {
     private let responseArrived = DispatchSemaphore(value: 0)
     private var target: Target?
     private var cachedName: String?
+    private var softwareID = HIDPP.softwareIDs.lowerBound
 
     var verbose = false
     /// Called on the HID thread when the mouse reports a battery change by itself.
@@ -128,7 +131,10 @@ final class HIDPP {
     /// Sends one request and waits for the reply. Returns the reply parameters, or nil on error or timeout.
     private func request(_ device: IOHIDDevice, index: UInt8, feature: UInt8, function: UInt8,
                          params: [UInt8] = []) -> [UInt8]? {
-        let functionByte = (function << 4) | HIDPP.softwareID
+        // Each request gets a different software ID. With a fixed ID, a reply that arrives after its
+        // request timed out is mistaken for the answer to the next request to the same feature.
+        softwareID = softwareID == HIDPP.softwareIDs.upperBound ? HIDPP.softwareIDs.lowerBound : softwareID + 1
+        let functionByte = (function << 4) | softwareID
         var message = [HIDPP.longReportID, index, feature, functionByte] + params
         message += [UInt8](repeating: 0, count: HIDPP.longReportLength - message.count)
 

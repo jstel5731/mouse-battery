@@ -36,6 +36,9 @@ if let flag = CommandLine.arguments.firstIndex(of: "--icon-preview"), CommandLin
         bitmap.size = icon.size
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        // A white backdrop keeps the black template image visible on dark pages.
+        NSColor.white.setFill()
+        NSRect(origin: .zero, size: icon.size).fill()
         icon.draw(in: NSRect(origin: .zero, size: icon.size))
         NSGraphicsContext.restoreGraphicsState()
         try! bitmap.representation(using: .png, properties: [:])!
