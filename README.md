@@ -111,6 +111,10 @@ app asks the mouse for its Unified Battery feature (`0x1004`), or the older Batt
 feature (`0x1000`), and reads the charge level. It only sends read requests and never changes
 a mouse setting.
 
+## License
+
+Released under the [MIT License](LICENSE).
+
 ## Disclaimer
 
 This project is not affiliated with or endorsed by Logitech. Logitech, G HUB and Lightspeed
