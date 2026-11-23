@@ -20,6 +20,8 @@ final class HIDPP {
     private static let longReportID: UInt8 = 0x11
     private static let shortReportID: UInt8 = 0x10
     private static let longReportLength = 20
+    /// An idle mouse saves power and can take a couple of seconds to answer.
+    private static let replyTimeout: TimeInterval = 3
 
     // HID++ 2.0 feature IDs
     private static let featureDeviceName: UInt16 = 0x0005
@@ -43,6 +45,7 @@ final class HIDPP {
     private var target: Target?
     private var cachedName: String?
     private var softwareID = HIDPP.softwareIDs.lowerBound
+    private var lastRequestTimedOut = false
 
     var verbose = false
     /// Called on the HID thread when the mouse reports a battery change by itself.
@@ -155,12 +158,13 @@ final class HIDPP {
         let result = IOHIDDeviceSetReport(device, kIOHIDReportTypeOutput, CFIndex(HIDPP.longReportID),
                                           message, message.count)
         var reply: [UInt8]?
-        if result == kIOReturnSuccess, responseArrived.wait(timeout: .now() + 0.7) == .success {
+        if result == kIOReturnSuccess, responseArrived.wait(timeout: .now() + HIDPP.replyTimeout) == .success {
             lock.lock(); reply = response; lock.unlock()
         } else if result != kIOReturnSuccess {
             log("Send failed: \(String(format: "0x%08x", result))")
         }
         lock.lock(); matcher = nil; response = nil; lock.unlock()
+        lastRequestTimedOut = reply == nil
 
         guard let reply, reply[0] == HIDPP.longReportID, reply[2] == feature else { return nil }
         return Array(reply[4...])
@@ -192,6 +196,9 @@ final class HIDPP {
                 var found: Target?
                 if let f = featureIndex(device, index: index, feature: HIDPP.featureUnifiedBattery) {
                     found = Target(device: device, deviceIndex: index, batteryFeatureIndex: f, unified: true)
+                } else if lastRequestTimedOut {
+                    // Nothing answers at this index, so asking again would only wait for another timeout.
+                    continue
                 } else if let f = featureIndex(device, index: index, feature: HIDPP.featureBatteryStatus) {
                     found = Target(device: device, deviceIndex: index, batteryFeatureIndex: f, unified: false)
                 }
