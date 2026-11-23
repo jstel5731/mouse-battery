@@ -6,7 +6,7 @@ enum BatteryIcon {
     // MARK: - Tweakable appearance
 
     /// Thickness of the percentage digits: .regular, .medium, .semibold, .bold, .heavy or .black.
-    private static let labelWeight: NSFont.Weight = .bold
+    private static let labelWeight: NSFont.Weight = .semibold
     /// Digit size in points for one or two digits, and for "100".
     private static let labelFontSize: CGFloat = 9.5
     private static let labelFontSizeThreeDigits: CGFloat = 7.5
